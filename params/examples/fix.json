@@ -1,6 +1,6 @@
 {
     "task": "fix",
-    "_comment": "Fixes EXIF dates for scanned photos based on folder structure (e.g. 1990/05).",
+    "_comment": "Fixes photo EXIF/PNG/HEIC dates and MP4/MOV creation_time based on folder structure (e.g. 1990/05).",
     "input_dirs": [
         "/path/to/scanned_photos"
     ],

@@ -24,8 +24,8 @@ Scans source directories and moves photos into a structured destination (e.g., `
 - **Use case**: Importing photos from an SD card or phone backup.
 
 ### 2. Fix Metadata (`fix`)
-Infers date/time from folder names (e.g., `1990/05`) and writes it to EXIF dates.
-- **Use case**: Scanned old photos that lack metadata.
+Infers date/time from folder names (e.g., `1990/05`) and writes it to photo EXIF/PNG/HEIC dates or MP4/MOV `creation_time`.
+- **Use case**: Scanned old photos, PNG/HEIC photos, or MP4/MOV videos that lack usable capture time metadata.
 
 ### 3. Rename (`rename`)
 Renames photos to `YYYYMMDD_HHMMSS_OriginalName.ext`.

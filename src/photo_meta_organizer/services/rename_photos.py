@@ -1,12 +1,16 @@
 import os
+import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, Set
+from typing import Dict, Any, Optional, Tuple, Set, List
 from PIL import Image
-from pillow_heif import register_heif_opener
+from photo_meta_organizer.services.image_io import register_heif_support
 
-# Register HEIC support
-register_heif_opener()
+register_heif_support()
+
+RENAMED_PREFIX_PATTERN = re.compile(
+    r"^(?P<prefix>\d{8}_\d{6}_(?:sys_)?)?(?P<original>.+)$"
+)
 
 
 def get_date_strategy(
@@ -82,6 +86,109 @@ def get_unique_path(path: Path) -> Path:
         counter += 1
 
 
+def get_original_filename(file_name: str) -> str:
+    """Returns the original filename without a generated time prefix."""
+    match = RENAMED_PREFIX_PATTERN.match(file_name)
+    if not match:
+        return file_name
+
+    prefix = match.group("prefix")
+    original = match.group("original")
+    return original if prefix else file_name
+
+
+def prepare_rename_context(
+    config: Dict[str, Any], dry_run: Optional[bool]
+) -> Tuple[Path, Set[str], Set[str], bool]:
+    """Builds the runtime context for rename."""
+    from photo_meta_organizer.config import get_extensions
+
+    target_dir = Path(config["directories"]["target_dir"])
+    resolved_dry_run = (
+        dry_run if dry_run is not None else config["settings"]["dry_run"]
+    )
+    extensions = get_extensions(config)
+    return target_dir, extensions["image"], extensions["all"], resolved_dry_run
+
+
+def collect_rename_candidates(target_dir: Path, valid_extensions: Set[str]) -> List[Path]:
+    """Collects candidate files for rename."""
+    candidates = []
+
+    for file_path in target_dir.rglob("*"):
+        if not file_path.is_file():
+            continue
+        if file_path.name.startswith(".") or file_path.name == ".DS_Store":
+            continue
+        if file_path.suffix.lower() not in valid_extensions:
+            continue
+        candidates.append(file_path)
+
+    return candidates
+
+
+def run_rename_candidates(
+    candidates: List[Path], image_extensions: Set[str], dry_run: bool
+) -> Dict[str, int]:
+    """Runs rename processing for collected candidate files."""
+    count_success = 0
+    count_skip = 0
+
+    for file_path in candidates:
+        try:
+            renamed, skipped = process_rename_file(
+                file_path=file_path,
+                image_extensions=image_extensions,
+                dry_run=dry_run,
+            )
+            if skipped:
+                count_skip += 1
+                continue
+            if not renamed:
+                continue
+            count_success += 1
+        except Exception as e:
+            print(f"❌ [Error] {file_path.name}: {e}")
+            count_skip += 1
+
+    return {"success": count_success, "skipped": count_skip}
+
+
+def process_rename_file(
+    file_path: Path,
+    image_extensions: Set[str],
+    dry_run: bool,
+) -> Tuple[bool, bool]:
+    """Processes a single file for rename.
+
+    Returns:
+        Tuple[bool, bool]: (renamed, skipped)
+    """
+    date_obj, source_tag = get_date_strategy(file_path, image_extensions)
+    if not date_obj:
+        print(f"⚠️ [No Date] Cannot process: {file_path.name}")
+        return False, True
+
+    time_prefix = date_obj.strftime("%Y%m%d_%H%M%S")
+    original_name = get_original_filename(file_path.name)
+    new_filename = f"{time_prefix}_{source_tag}{original_name}"
+    target_path = file_path.parent / new_filename
+
+    if target_path.name == file_path.name:
+        return False, False
+
+    if target_path.exists():
+        target_path = get_unique_path(target_path)
+
+    if dry_run:
+        print(f"📝 [Dry Run] {file_path.name}  --->  {target_path.name}")
+    else:
+        file_path.rename(target_path)
+        print(f"✅ {file_path.name} -> {target_path.name}")
+
+    return True, False
+
+
 def rename_process(
     config: Dict[str, Any], dry_run: Optional[bool] = None, verbose: bool = False
 ) -> Dict[str, Any]:
@@ -97,14 +204,9 @@ def rename_process(
     Returns:
         Dict[str, Any]: Statistics including "success" and "skipped".
     """
-    from photo_meta_organizer.config import get_extensions
-
-    target_dir = Path(config["directories"]["target_dir"])
-    dry_run = dry_run if dry_run is not None else config["settings"]["dry_run"]
-
-    extensions = get_extensions(config)
-    image_extensions = extensions["image"]
-    valid_extensions = extensions["all"]
+    target_dir, image_extensions, valid_extensions, dry_run = prepare_rename_context(
+        config, dry_run
+    )
 
     print(f"🚀 Rename Mission Start | Mode: {'[DRY RUN]' if dry_run else '[LIVE]'}")
     print(f"📂 Target: {target_dir}")
@@ -114,72 +216,13 @@ def rename_process(
         print("❌ Target directory not found")
         return {"success": 0, "skipped": 0}
 
-    count_success = 0
-    count_skip = 0
-
-    # Recursive scan
-    for file_path in target_dir.rglob("*"):
-        if not file_path.is_file():
-            continue
-
-        # 1. Skip system files
-        if file_path.name.startswith(".") or file_path.name == ".DS_Store":
-            continue
-
-        # 2. Check extensions
-        if file_path.suffix.lower() not in valid_extensions:
-            continue
-
-        # 3. Check if already renamed (8 digits + underscore) e.g. 20220101_
-        if (
-            len(file_path.name) > 9
-            and file_path.name[:8].isdigit()
-            and file_path.name[8] == "_"
-        ):
-            # print(f"⏩ [Already Renamed] Skip: {file_path.name}")
-            continue
-
-        # --- Core Logic ---
-        try:
-            date_obj, source_tag = get_date_strategy(file_path, image_extensions)
-
-            if not date_obj:
-                print(f"⚠️ [No Date] Cannot process: {file_path.name}")
-                count_skip += 1
-                continue
-
-            # Construct new filename: YYYYMMDD_HHMMSS_[sys_]Original.ext
-            time_prefix = date_obj.strftime("%Y%m%d_%H%M%S")
-            original_name = file_path.name
-
-            # Combine
-            new_filename = f"{time_prefix}_{source_tag}{original_name}"
-            target_path = file_path.parent / new_filename
-
-            # Skip if name hasn't changed
-            if target_path.name == file_path.name:
-                continue
-
-            # Handle duplicates
-            if target_path.exists():
-                target_path = get_unique_path(target_path)
-
-            # Execute
-            if dry_run:
-                print(f"📝 [Dry Run] {file_path.name}  --->  {target_path.name}")
-            else:
-                file_path.rename(target_path)
-                print(f"✅ {file_path.name} -> {target_path.name}")
-
-            count_success += 1
-
-        except Exception as e:
-            print(f"❌ [Error] {file_path.name}: {e}")
-            count_skip += 1
+    candidates = collect_rename_candidates(target_dir, valid_extensions)
+    result = run_rename_candidates(candidates, image_extensions, dry_run)
 
     print("-" * 40)
-    print(f"🏁 Done. Planned rename: {count_success}, Skipped/Error: {count_skip}")
+    print(
+        f"🏁 Done. Planned rename: {result['success']}, Skipped/Error: {result['skipped']}"
+    )
     if dry_run:
         print("💡 Tip: Set DRY_RUN = False in code or config to execute.")
-
-    return {"success": count_success, "skipped": count_skip}
+    return result

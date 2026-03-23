@@ -70,7 +70,7 @@ def fix(
         if source:
             config["directories"]["fix_dir"] = source
 
-        result = run_fix(config=config, dry_run=dry_run, verbose=verbose)
+        result = run_fix(config=config, dry_run=dry_run)
 
         if result["success"] > 0:
             typer.echo(f"\n✅ Successfully fixed {result['success']} files")
@@ -233,7 +233,7 @@ def run_task(
 
         config.setdefault("settings", {})["dry_run"] = dry_run
 
-        result = run_fix(config=config, dry_run=dry_run, verbose=verbose)
+        result = run_fix(config=config, dry_run=dry_run)
 
     elif task_name == "rename":
         from photo_meta_organizer.services.rename_photos import rename_process

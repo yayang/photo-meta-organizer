@@ -3,6 +3,7 @@ import os
 import shutil
 import json
 import subprocess
+from datetime import datetime
 from pathlib import Path
 import time
 
@@ -95,12 +96,10 @@ class TestPhotoMetaOrganizerE2E(unittest.TestCase):
         self.assertEqual(res.returncode, 0, f"CLI Failed: {res.stderr}")
 
         # Verify
-        # Should be in DST/2023/2023-01/test.jpg (based on file default strategy)
-        # Note: Actual structure depends on implementation details of organize_photos.py
-        # Let's just search recursively
+        # Should be in a zero-padded month folder like DST/.../2023/2023-01/test.jpg
         moved_files = list(DST_DIR.rglob("test.jpg"))
         self.assertEqual(len(moved_files), 1, "File should be in destination")
-        self.assertIn("2023", str(moved_files[0]))
+        self.assertIn("2023-01", str(moved_files[0]))
 
     def test_rename(self):
         # Create photo
@@ -126,6 +125,66 @@ class TestPhotoMetaOrganizerE2E(unittest.TestCase):
         # Expected: 20230520_100000_sys_rename_me.jpg (or similar)
         self.assertIn("20230520", renamed[0].name)
         self.assertNotEqual(renamed[0].name, "rename_me.jpg")
+
+    def test_fix_video_metadata(self):
+        target_dir = SRC_DIR / "2020" / "5"
+        target_dir.mkdir(parents=True)
+        videos = [target_dir / "clip.mp4", target_dir / "clip.mov"]
+
+        for video in videos:
+            create_video = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=black:s=16x16:d=1",
+                    "-pix_fmt",
+                    "yuv420p",
+                    str(video),
+                    "-y",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(create_video.returncode, 0, create_video.stderr)
+
+        params = {
+            "task": "fix",
+            "input_dirs": [str(SRC_DIR)],
+            "dry_run": False,
+        }
+        with open(PARAMS_FILE, "w") as f:
+            json.dump(params, f)
+
+        res = self.run_cli(["run-task", str(PARAMS_FILE)])
+        self.assertEqual(res.returncode, 0, f"CLI Failed: {res.stderr}")
+
+        for video in videos:
+            probe = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format_tags=creation_time",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(video),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(probe.returncode, 0, probe.stderr)
+            self.assertEqual(probe.stdout.strip(), "2020-05-15T12:00:00")
+
+            mtime = datetime.fromtimestamp(video.stat().st_mtime)
+            self.assertEqual(
+                mtime.strftime("%Y-%m-%d %H:%M:%S"), "2020-05-15 12:00:00"
+            )
 
 
 if __name__ == "__main__":
